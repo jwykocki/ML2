@@ -1,0 +1,267 @@
+---
+jupyter:
+  jupytext:
+    text_representation:
+      extension: .Rmd
+      format_name: rmarkdown
+      format_version: '1.2'
+      jupytext_version: 1.19.3
+  kernelspec:
+    display_name: ML Shared
+    language: python
+    name: ml_shared
+---
+
+# Counterfeit detection
+
+
+The task in this assignment is to detect the counterfeit banknotes. The data set is based on [banknote authentication Data Set](https://archive.ics.uci.edu/ml/datasets/banknote+authentication#) from UCI Machine Learning repository. The first four columns denote different parameters obtained from the photographs of the banknotes and last column provides the label. We assume that label 1 (positive) denotes the counterfeits.
+
+```{python}
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import scipy.stats as st
+```
+
+```{python}
+from sklearn.metrics import classification_report, ConfusionMatrixDisplay
+```
+
+```{python}
+import matplotlib.pyplot as plt
+plt.rcParams['figure.figsize'] = (8, 8)
+```
+
+Jakub Wykocki, 05.06.2026
+
+```{python}
+from sklearn.model_selection import train_test_split
+seed = 31287
+```
+
+```{python}
+data = pd.read_csv('data/banknotes_data.csv')
+```
+
+```{python}
+data.head()
+```
+
+```{python}
+data.describe()
+```
+
+```{python}
+data.info()
+```
+
+```{python}
+data_train, data_test = train_test_split(
+    data, test_size=0.2, shuffle=True,
+    stratify=data.loc[:, 'counterfeit'], random_state=seed
+)
+```
+
+```{python}
+data_train
+```
+
+```{python}
+lbls_train = data_train['counterfeit']
+lbls_test  = data_test['counterfeit']
+```
+
+```{python}
+fig, ax = plt.subplots(1, 4, figsize=(22, 5))
+for i in range(4):
+    ax[i].hist(data_train[lbls_train == 0].iloc[:, i], bins=32, histtype='step',  color='blue')
+    ax[i].hist(data_train[lbls_train == 1].iloc[:, i], bins=32, histtype='step',  color='red')
+    ax[i].hist(data_train[lbls_train == 0].iloc[:, i], bins=32, histtype='bar',   color='lightblue', alpha=0.25)
+    ax[i].hist(data_train[lbls_train == 1].iloc[:, i], bins=32, histtype='bar',   color='orange',    alpha=0.25)
+    ax[i].set_title(data_train.columns[i])
+ax[0].legend(['genuine', 'counterfeit'])
+plt.suptitle('Feature distributions: blue = genuine, orange = counterfeit')
+plt.tight_layout()
+plt.show()
+```
+
+# Problem 1
+
+Train a neural network classifier to predict counterfeit banknotes. Use the features `a0` and `a3`. Calculate the confusion matrix and AUC score.
+
+```{python}
+import torch
+import torch.nn as tnn
+```
+
+```{python}
+features = [0, 3]   #  a0 and a3
+nf = len(features)
+```
+
+```{python}
+features_train = torch.from_numpy(data_train.values[:, features]).to(dtype=torch.float32)
+labels_train   = torch.from_numpy(data_train.values[:, 4:5]).to(dtype=torch.float32)
+```
+
+```{python}
+features_test = torch.from_numpy(data_test.values[:, features]).to(dtype=torch.float32)
+labels_test   = torch.from_numpy(data_test.values[:, 4:5]).to(dtype=torch.float32)
+```
+
+## Model definition
+
+Small two-layer MLP: 2 inputs> 8 hidden > 1 output.
+Binary Cross-Entropy (BCELoss) is used for a binary classification problem with a sigmoid output
+
+```{python}
+torch.manual_seed(seed)
+
+model = tnn.Sequential(
+    tnn.Linear(in_features=nf, out_features=8),
+    tnn.ReLU(),
+    tnn.Linear(8, 1),
+    tnn.Sigmoid()
+)
+
+print(model)
+```
+
+```{python}
+from sklearn.metrics import roc_curve, roc_auc_score, confusion_matrix, accuracy_score
+```
+
+```{python}
+loss_fn   = tnn.BCELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+```
+
+## Training loop
+
+50 eras x 500 epochs = 25 000 gradient steps
+
+```{python}
+train_accs, test_accs = [], []
+
+for era in range(50):
+    for epoch in range(500):
+        optimizer.zero_grad()
+        pred = model(features_train)
+        loss = loss_fn(pred, labels_train)
+        loss.backward()
+        optimizer.step()
+
+    with torch.no_grad():
+        pred_tr  = model(features_train)
+        acc_train = torch.mean(0.0 + ((pred_tr  > 0.5) == (labels_train > 0.5))).item()
+        pred_te  = model(features_test)
+        acc_test  = torch.mean(0.0 + ((pred_te  > 0.5) == (labels_test  > 0.5))).item()
+
+    train_accs.append(acc_train)
+    test_accs.append(acc_test)
+
+    if (era + 1) % 10 == 0:
+        print(f'Era {era+1:3d}  |  train acc: {acc_train}  |  test acc: {acc_test}')
+```
+
+```{python}
+plt.figure(figsize=(9, 4))
+plt.plot(train_accs, label='Train accuracy')
+plt.plot(test_accs,  label='Test accuracy')
+plt.xlabel('Era')
+plt.ylabel('Accuracy')
+plt.title('Learning curve')
+plt.legend()
+plt.tight_layout()
+plt.show()
+```
+
+## Evaluation on the test set
+
+```{python}
+y_true = labels_test.numpy().flatten().astype(int)
+
+with torch.no_grad():
+    y_proba     = model(features_test).numpy().flatten()
+    y_predicted = (y_proba > 0.5).astype(int)
+```
+
+### Confusion Matrix
+
+```{python}
+print('Accuracy:', accuracy_score(y_true, y_predicted))
+print()
+print(classification_report(y_true, y_predicted, target_names=['genuine (0)', 'counterfeit (1)']))
+```
+
+```{python}
+fig, ax = plt.subplots(figsize=(6, 5))
+ConfusionMatrixDisplay.from_predictions(
+    y_true, y_predicted,
+    display_labels=['genuine', 'counterfeit'],
+    colorbar=False, ax=ax
+)
+ax.set_title('Confusion matrix test set')
+plt.tight_layout()
+plt.show()
+```
+
+### AUC and ROC curve
+
+```{python}
+auc = roc_auc_score(y_true, y_proba)
+print(f'AUC score: {auc}')
+
+fpr, tpr, _ = roc_curve(y_true, y_proba)
+
+plt.figure(figsize=(7, 6))
+plt.plot(fpr, tpr, lw=2, label=f'ROC curve (AUC = {auc})')
+plt.plot([0, 1], [0, 1], 'k--', label='Random classifier')
+plt.xlabel('False positive rate')
+plt.ylabel('True positive rate')
+plt.title('ROC Curve : Neural Network (a0, a3)')
+plt.legend(loc='lower right')
+plt.tight_layout()
+plt.show()
+```
+
+### Decision boundary in feature space (a0 vs a3)
+
+```{python}
+x0_range = np.linspace(features_test[:, 0].min().item() - 0.5,
+                        features_test[:, 0].max().item() + 0.5, 300)
+x1_range = np.linspace(features_test[:, 1].min().item() - 0.5,
+                        features_test[:, 1].max().item() + 0.5, 300)
+xx0, xx1 = np.meshgrid(x0_range, x1_range)
+grid = torch.tensor(np.c_[xx0.ravel(), xx1.ravel()], dtype=torch.float32)
+
+with torch.no_grad():
+    zz = model(grid).numpy().reshape(xx0.shape)
+
+plt.figure(figsize=(9, 7))
+cf = plt.contourf(xx0, xx1, zz, levels=np.linspace(0, 1, 51), cmap='RdBu_r', alpha=0.7)
+plt.contour(xx0, xx1, zz, levels=[0.5], colors='black', linewidths=2)
+plt.colorbar(cf, label='P(counterfeit)')
+
+X_te = features_test.numpy()
+plt.scatter(X_te[y_true == 0, 0], X_te[y_true == 0, 1],
+            c='blue', edgecolors='k', s=30, alpha=0.6, label='genuine')
+plt.scatter(X_te[y_true == 1, 0], X_te[y_true == 1, 1],
+            c='red',  edgecolors='k', s=30, alpha=0.6, label='counterfeit')
+plt.xlabel('a0')
+plt.ylabel('a3')
+plt.title('Decision boundary (black line is 0.5 threshold)')
+plt.legend()
+plt.tight_layout()
+plt.show()
+```
+
+## Summary
+
+Features used: a0, a3
+Arch: 2 -> 8 (ReLU) -> 1 (Sigmoid)
+Loss: Binary Cross-Entropy
+Training 50 eras x 500 epochs
+The model achieves a good AUC score, the confusion matrix and classification report detail per-class precision and recall.
+The decision boundary plot shows how the network partitios the 2D feature space.
